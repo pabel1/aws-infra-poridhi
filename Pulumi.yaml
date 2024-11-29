@@ -1,0 +1,11 @@
+name: aws-infra
+description: A Pulumi project for AWS infrastructure
+runtime:
+  name: nodejs
+  options:
+    typescript: false
+    packagemanager: npm
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: aws-javascript
