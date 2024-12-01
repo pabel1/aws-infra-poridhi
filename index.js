@@ -1,131 +1,137 @@
-// require("dotenv").config();
-const config = require("./config");
 const pulumi = require("@pulumi/pulumi");
 const aws = require("@pulumi/aws");
 
-// VPC Configuration
-const vpc = new aws.ec2.Vpc("main-vpc", {
-  cidrBlock: config.vpc.cidrBlock,
+// Create a VPC with improved network configuration
+const vpc = new aws.ec2.Vpc("my-vpc", {
+  cidrBlock: "10.0.0.0/16",
   enableDnsHostnames: true,
   enableDnsSupport: true,
   tags: {
-    ...config.tags,
-    Name: "main-vpc",
+    Name: "my-vpc",
+    Environment: "Production",
   },
 });
 
-// Internet Gateway
-const internetGateway = new aws.ec2.InternetGateway("main-igw", {
+exports.vpcId = vpc.id;
+
+// Create public subnet with more specific configuration
+const publicSubnet = new aws.ec2.Subnet("public-subnet", {
+  vpcId: vpc.id,
+  cidrBlock: "10.0.1.0/24",
+  availabilityZone: "ap-southeast-1a",
+  mapPublicIpOnLaunch: true,
+  tags: {
+    Name: "my-public-subnet",
+    Type: "Public",
+  },
+});
+
+exports.publicSubnetId = publicSubnet.id;
+
+// Create a private subnet
+const privateSubnet = new aws.ec2.Subnet("private-subnet", {
+  vpcId: vpc.id,
+  cidrBlock: "10.0.2.0/24",
+  availabilityZone: "ap-southeast-1a",
+  tags: {
+    Name: "my-private-subnet",
+    Type: "Private",
+  },
+});
+exports.privateSubnetId = privateSubnet.id;
+
+// Internet gateway with improved tagging
+const igw = new aws.ec2.InternetGateway("internet-gateway", {
   vpcId: vpc.id,
   tags: {
-    ...config.tags,
-    Name: "main-igw",
+    Name: "my-internet-gateway",
+    Description: "Internet Gateway for VPC",
   },
 });
 
-// Public Subnets (Multiple for High Availability)
-const publicSubnets = [];
-const privateSubnets = [];
+exports.igwId = igw.id;
 
-// Create multiple public and multiple private subnets in different AZs
-const availabilityZones = config.vpc.availabilityZones;
-availabilityZones.forEach((az, index) => {
-  const publicSubnet = new aws.ec2.Subnet(`public-subnet-${index + 1}`, {
-    vpcId: vpc.id,
-    cidrBlock: config.vpc.publicSubnets[index],
-    availabilityZone: az,
-    mapPublicIpOnLaunch: true,
-    tags: {
-      ...config.tags,
-      Name: `public-subnet-${index + 1}`,
-    },
-  });
-  publicSubnets.push(publicSubnet);
-
-  const privateSubnet = new aws.ec2.Subnet(`private-subnet-${index + 1}`, {
-    vpcId: vpc.id,
-    cidrBlock: config.vpc.privateSubnets[index],
-    availabilityZone: az,
-    tags: {
-      ...config.tags,
-      Name: `private-subnet-${index + 1}`,
-    },
-  });
-  privateSubnets.push(privateSubnet);
-});
-
-// Public Route Table
-const publicRouteTable = new aws.ec2.RouteTable("public-rt", {
+// Public route table with more descriptive configuration
+const publicRouteTable = new aws.ec2.RouteTable("public-route-table", {
   vpcId: vpc.id,
-  routes: [
-    {
-      cidrBlock: "0.0.0.0/0",
-      gatewayId: internetGateway.id,
-    },
-  ],
   tags: {
-    ...config.tags,
-    Name: "public-rt",
+    Name: "my-public-route-table",
+    Description: "Route table for public subnets",
   },
 });
 
-// Associate Public Subnets with Route Table
-publicSubnets.forEach((subnet, index) => {
-  new aws.ec2.RouteTableAssociation(`public-rt-association-${index + 1}`, {
-    subnetId: subnet.id,
+// Route for internet gateway
+const route = new aws.ec2.Route("igw-route", {
+  routeTableId: publicRouteTable.id,
+  destinationCidrBlock: "0.0.0.0/0",
+  gatewayId: igw.id,
+});
+
+// Public route table association
+const routeTableAssociation = new aws.ec2.RouteTableAssociation(
+  "public-route-table-association",
+  {
+    subnetId: publicSubnet.id,
     routeTableId: publicRouteTable.id,
-  });
+  }
+);
+
+exports.publicRouteTableId = publicRouteTable.id;
+
+// Elastic IP with improved configuration
+const eip = new aws.ec2.Eip("nat-eip", {
+  vpc: true,
+  tags: {
+    Name: "NAT Gateway EIP",
+    Description: "Elastic IP for NAT Gateway",
+  },
+  // Add these options to make the EIP more robust
+  publicIpv4Pool: "amazon", // Use Amazon's default IP pool
+});
+// NAT Gateway with improved error handling
+const natGateway = new aws.ec2.NatGateway("nat-gateway", {
+  subnetId: publicSubnet.id,
+  allocationId: eip.id,
+  tags: {
+    Name: "my-nat-gateway",
+    Description: "NAT Gateway for private subnet internet access",
+  },
+  // Optional: Add a dependency to ensure EIP is fully created first
+  opts: { dependsOn: [eip] },
+});
+exports.natGatewayId = natGateway.id;
+
+// Private route table
+const privateRouteTable = new aws.ec2.RouteTable("private-route-table", {
+  vpcId: vpc.id,
+  tags: {
+    Name: "my-private-route-table",
+    Description: "Route table for private subnets",
+  },
 });
 
-// NAT Gateways for Private Subnets in public subnet
-const natGateways = publicSubnets.map((subnet, index) => {
-  const natEip = new aws.ec2.Eip(`nat-eip-${index + 1}`, {
-    vpc: true,
-    tags: {
-      ...config.tags,
-      Name: `nat-eip-${index + 1}`,
-    },
-  });
-
-  return new aws.ec2.NatGateway(`nat-gateway-${index + 1}`, {
-    allocationId: natEip.id,
-    subnetId: subnet.id,
-    tags: {
-      ...config.tags,
-      Name: `nat-gateway-${index + 1}`,
-    },
-  });
+// Private route via NAT Gateway
+const privateRoute = new aws.ec2.Route("nat-route", {
+  routeTableId: privateRouteTable.id,
+  destinationCidrBlock: "0.0.0.0/0",
+  natGatewayId: natGateway.id,
 });
 
-// Private Route Tables with NAT Gateway
-const privateRouteTables = natGateways.map((natGateway, index) => {
-  const privateRouteTable = new aws.ec2.RouteTable(`private-rt-${index + 1}`, {
-    vpcId: vpc.id,
-    routes: [
-      {
-        cidrBlock: "0.0.0.0/0",
-        natGatewayId: natGateway.id,
-      },
-    ],
-    tags: {
-      ...config.tags,
-      Name: `private-rt-${index + 1}`,
-    },
-  });
-
-  // Associate Private Subnet with Route Table
-  new aws.ec2.RouteTableAssociation(`private-rt-association-${index + 1}`, {
-    subnetId: privateSubnets[index].id,
+// Private route table association
+const privateRouteTableAssociation = new aws.ec2.RouteTableAssociation(
+  "private-route-table-association",
+  {
+    subnetId: privateSubnet.id,
     routeTableId: privateRouteTable.id,
-  });
+  }
+);
 
-  return privateRouteTable;
-});
+exports.privateRouteTableId = privateRouteTable.id;
 
-// Security Groups
+// Frontend Security Group with more comprehensive rules
 const frontendSecurityGroup = new aws.ec2.SecurityGroup("frontend-sg", {
   vpcId: vpc.id,
-  description: "Security group for frontend instances",
+  description: "Allow HTTP/HTTPS traffic for frontend",
   ingress: [
     {
       protocol: "tcp",
@@ -149,20 +155,21 @@ const frontendSecurityGroup = new aws.ec2.SecurityGroup("frontend-sg", {
     },
   ],
   tags: {
-    ...config.tags,
-    Name: "frontend-sg",
+    Name: "Frontend Security Group",
+    Description: "Controls frontend network access",
   },
 });
 
+// Backend Security Group with more specific configuration
 const backendSecurityGroup = new aws.ec2.SecurityGroup("backend-sg", {
   vpcId: vpc.id,
-  description: "Security group for backend instances",
+  description: "Allow traffic to backend services",
   ingress: [
     {
       protocol: "tcp",
-      fromPort: 4000,
-      toPort: 4000,
-      securityGroupIds: [frontendSecurityGroup.id],
+      fromPort: 4007,
+      toPort: 4007,
+      securityGroups: [frontendSecurityGroup.id],
     },
   ],
   egress: [
@@ -174,20 +181,21 @@ const backendSecurityGroup = new aws.ec2.SecurityGroup("backend-sg", {
     },
   ],
   tags: {
-    ...config.tags,
-    Name: "backend-sg",
+    Name: "Backend Security Group",
+    Description: "Controls backend network access",
   },
 });
 
-const mongoSecurityGroup = new aws.ec2.SecurityGroup("mongo-sg", {
+// Database Security Group with enhanced security
+const dbSecurityGroup = new aws.ec2.SecurityGroup("db-sg", {
   vpcId: vpc.id,
-  description: "Security group for MongoDB instances",
+  description: "Allow MongoDB access from backend",
   ingress: [
     {
       protocol: "tcp",
       fromPort: 27017,
       toPort: 27017,
-      securityGroupIds: [backendSecurityGroup.id],
+      securityGroups: [backendSecurityGroup.id],
     },
   ],
   egress: [
@@ -199,154 +207,252 @@ const mongoSecurityGroup = new aws.ec2.SecurityGroup("mongo-sg", {
     },
   ],
   tags: {
-    ...config.tags,
-    Name: "mongo-sg",
+    Name: "MongoDB Security Group",
+    Description: "Controls database network access",
   },
 });
 
-// Frontend Instances
-const frontendInstances = publicSubnets.map((subnet, index) => {
-  return new aws.ec2.Instance(`frontend-instance-${index + 1}`, {
-    instanceType: config.frontend.instanceType,
-    ami: config.frontend.ami,
-    subnetId: subnet.id,
-    vpcSecurityGroupIds: [frontendSecurityGroup.id],
-    keyName: config.ec2.keyName,
-    tags: {
-      ...config.tags,
-      Name: `frontend-instance-${index + 1}`,
-    },
-  });
-});
+// MongoDB Instance with more robust setup
+const dbInstance = new aws.ec2.Instance("mongodb-instance", {
+  ami: "ami-047126e50991d067b",
+  instanceType: "t2.micro",
+  subnetId: privateSubnet.id,
+  keyName: "exam",
+  securityGroups: [dbSecurityGroup.id],
+  userData: `#!/bin/bash
+# Enhanced MongoDB installation script
+set -e
 
-// Backend Instances
-const backendInstances = privateSubnets.map((subnet, index) => {
-  return new aws.ec2.Instance(`backend-instance-${index + 1}`, {
-    instanceType: config.backend.instanceType,
-    ami: config.backend.ami,
-    subnetId: subnet.id,
-    vpcSecurityGroupIds: [backendSecurityGroup.id],
-    keyName: config.ec2.keyName,
-    tags: {
-      ...config.tags,
-      Name: `backend-instance-${index + 1}`,
-    },
-  });
-});
+# Update system and install dependencies
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -y
+sudo apt-get install -y wget gnupg
 
-// MongoDB Instances
-const mongoInstances = privateSubnets.map((subnet, index) => {
-  return new aws.ec2.Instance(`mongo-instance-${index + 1}`, {
-    instanceType: config.mongodb.instanceType,
-    ami: config.mongodb.ami,
-    subnetId: subnet.id,
-    vpcSecurityGroupIds: [mongoSecurityGroup.id],
-    keyName: config.ec2.keyName,
-    tags: {
-      ...config.tags,
-      Name: `mongo-instance-${index + 1}`,
-    },
-  });
-});
+# Import MongoDB GPG key with error handling
+wget -qO - https://www.mongodb.org/static/pgp/server-6.0.asc | sudo apt-key add - || {
+  echo "Failed to import MongoDB GPG key"
+  exit 1
+}
 
-// Target Groups
-const frontendTargetGroup = new aws.lb.TargetGroup("frontend-tg", {
-  port: 80,
-  protocol: "HTTP",
-  vpcId: vpc.id,
-  healthCheck: {
-    path: "/",
-    protocol: "HTTP",
-    matcher: "200",
-    interval: 30,
-    timeout: 5,
-    healthyThreshold: 2,
-    unhealthyThreshold: 2,
-  },
+# Add MongoDB repository
+echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list
+
+# Install MongoDB with retry mechanism
+max_attempts=3
+attempt=0
+while [ $attempt -lt $max_attempts ]; do
+  sudo apt-get update && sudo apt-get install -y mongodb-org && break
+  attempt=$((attempt+1))
+  echo "Installation attempt $attempt failed. Retrying..."
+  sleep 5
+done
+
+# Configure MongoDB for better security
+sudo sed -i 's/^  bindIp: 127.0.0.1/  bindIp: 0.0.0.0/' /etc/mongod.conf
+sudo sed -i 's/^#security:/security:\n  authorization: enabled/' /etc/mongod.conf
+
+# Start and enable MongoDB
+sudo systemctl restart mongod
+sudo systemctl enable mongod
+
+# Wait for MongoDB to start
+sleep 10
+
+# Create MongoDB user and database with error handling
+mongosh <<EOF
+use admin
+try {
+  db.createUser({
+    user: "mongouser",
+    pwd: "mongopassword",
+    roles: [
+      { role: "readWrite", db: "todo_db" }
+    ]
+  });
+  print("User created successfully");
+} catch (error) {
+  print("Error creating user: " + error);
+  throw error;
+}
+EOF
+  `,
   tags: {
-    ...config.tags,
-    Name: "frontend-tg",
+    Name: "MongoDB",
+    Purpose: "Todo App Database",
   },
 });
 
-const backendTargetGroup = new aws.lb.TargetGroup("backend-tg", {
-  port: config.backend.port,
-  protocol: "HTTP",
-  vpcId: vpc.id,
-  healthCheck: {
-    path: config.backend.healthCheckPath,
-    protocol: "HTTP",
-    matcher: "200",
-    interval: 30,
-    timeout: 5,
-    healthyThreshold: 2,
-    unhealthyThreshold: 2,
-  },
-  tags: {
-    ...config.tags,
-    Name: "backend-tg",
-  },
-});
+// Backend Instances with improved configuration
+const backendInstances = [0, 1, 2].map(
+  (i) =>
+    new aws.ec2.Instance(`backend-${i}`, {
+      ami: "ami-047126e50991d067b",
+      instanceType: "t2.micro",
+      subnetId: privateSubnet.id,
+      keyName: "exam",
+      securityGroups: [backendSecurityGroup.id],
+      userData: `#!/bin/bash
+# Improved backend deployment script
+set -e
 
-// Attach Instances to Target Groups
-frontendInstances.forEach((instance, index) => {
-  new aws.lb.TargetGroupAttachment(`frontend-tg-attachment-${index + 1}`, {
-    targetGroupArn: frontendTargetGroup.arn,
-    targetId: instance.id,
-    port: 80,
-  });
-});
+sudo apt-get update -y
+sudo apt-get install -y docker.io
 
-backendInstances.forEach((instance, index) => {
-  new aws.lb.TargetGroupAttachment(`backend-tg-attachment-${index + 1}`, {
-    targetGroupArn: backendTargetGroup.arn,
-    targetId: instance.id,
-    port: config.backend.port,
-  });
-});
+# Enable and start Docker
+sudo systemctl enable docker
+sudo systemctl start docker
 
-// Application Load Balancer
-const applicationLoadBalancer = new aws.lb.LoadBalancer("main-alb", {
-  internal: false,
-  loadBalancerType: "application",
+# Pull and run backend container with comprehensive environment variables
+sudo docker run -d \
+    --name todo-backend-${i} \
+    --restart unless-stopped \
+    -p 4007:4007 \
+    -e DB_HOST=${dbInstance.privateIp} \
+    -e DB_PORT=27017 \
+    -e DB_USER=mongouser \
+    -e DB_PASSWORD=mongopassword \
+    -e DB_NAME=todo_db \
+    -e JWT_SECRET=$(openssl rand -base64 32) \
+    pabel1/todo-backend:latest
+      `,
+      tags: {
+        Name: `Backend-${i}`,
+        Type: "Todo App Backend",
+      },
+    })
+);
+
+// NGINX Load Balancer with enhanced configuration
+const nginxInstance = new aws.ec2.Instance("nginx-load-balancer", {
+  ami: "ami-047126e50991d067b",
+  instanceType: "t2.micro",
+  subnetId: publicSubnet.id,
+  keyName: "exam",
   securityGroups: [frontendSecurityGroup.id],
-  subnets: publicSubnets.map((subnet) => subnet.id),
+  userData: `#!/bin/bash
+# Comprehensive Nginx Load Balancer setup
+sudo apt-get update -y
+sudo apt-get install -y nginx
+
+# Create advanced Nginx configuration
+cat <<'EOT' > /etc/nginx/nginx.conf
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+    multi_accept on;
+}
+
+http {
+    upstream backend {
+        least_conn;
+        server ${backendInstances[0].privateIp}:4007;
+        server ${backendInstances[1].privateIp}:4007;
+        server ${backendInstances[2].privateIp}:4007;
+        keepalive 32;
+    }
+
+    server {
+        listen 80;
+        listen [::]:80;
+
+        location / {
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+        }
+    }
+}
+EOT
+
+# Test and restart Nginx
+sudo nginx -t
+sudo systemctl restart nginx
+  `,
   tags: {
-    ...config.tags,
-    Name: "main-alb",
+    Name: "Nginx-Load-Balancer",
+    Purpose: "Backend Load Balancing",
   },
 });
 
-// ALB Listeners
-const frontendListener = new aws.lb.Listener("frontend-listener", {
-  loadBalancerArn: applicationLoadBalancer.arn,
-  port: 80,
-  protocol: "HTTP",
-  defaultActions: [
-    {
-      type: "forward",
-      targetGroupArn: frontendTargetGroup.arn,
-    },
-  ],
+// Frontend Instance with improved deployment
+const frontendInstance = new aws.ec2.Instance("frontend", {
+  ami: "ami-047126e50991d067b",
+  instanceType: "t2.micro",
+  subnetId: publicSubnet.id,
+  keyName: "exam",
+  securityGroups: [frontendSecurityGroup.id],
+  userData: `#!/bin/bash
+# Enhanced frontend deployment script
+set -e
+
+sudo apt-get update -y
+sudo apt-get install -y docker.io nginx
+
+# Enable and start services
+sudo systemctl enable docker
+sudo systemctl start docker
+sudo systemctl enable nginx
+
+# Run frontend container
+sudo docker run -d \
+    --name todo-frontend \
+    --restart unless-stopped \
+    -p 3030:3000 \
+    pabel1/todo-app-frontend:latest
+
+# Configure Nginx as a reverse proxy
+cat <<'EOT' > /etc/nginx/sites-available/frontend
+server {
+    listen 80;
+    listen [::]:80;
+
+    location / {
+        proxy_pass http://localhost:3030;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOT
+
+# Enable configuration
+ln -s /etc/nginx/sites-available/frontend /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+  `,
+  tags: {
+    Name: "Frontend",
+    Type: "Todo App Frontend",
+  },
 });
 
-const backendListener = new aws.lb.Listener("backend-listener", {
-  loadBalancerArn: applicationLoadBalancer.arn,
-  port: config.backend.port,
-  protocol: "HTTP",
-  defaultActions: [
-    {
-      type: "forward",
-      targetGroupArn: backendTargetGroup.arn,
-    },
-  ],
-});
+// Comprehensive outputs
+exports.vpcDetails = {
+  id: vpc.id,
+  publicSubnetId: publicSubnet.id,
+  privateSubnetId: privateSubnet.id,
+};
 
-// Exports
-exports.vpcId = vpc.id;
-exports.publicSubnetIds = publicSubnets.map((subnet) => subnet.id);
-exports.privateSubnetIds = privateSubnets.map((subnet) => subnet.id);
-exports.frontendInstanceIds = frontendInstances.map((instance) => instance.id);
-exports.backendInstanceIds = backendInstances.map((instance) => instance.id);
-exports.mongoInstanceIds = mongoInstances.map((instance) => instance.id);
-exports.albDnsName = applicationLoadBalancer.dnsName;
+exports.databaseDetails = {
+  host: dbInstance.privateIp,
+  port: 27017,
+  user: "mongouser",
+  databaseName: "todo_db",
+};
+
+exports.instanceDetails = {
+  frontendPublicIp: frontendInstance.publicIp,
+  nginxLoadBalancerIp: nginxInstance.publicIp,
+  backendInstanceIps: backendInstances.map((instance) => instance.privateIp),
+};
